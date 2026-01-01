@@ -1,0 +1,1018 @@
+extends Node3D
+
+const GRID_SIZE = 20
+const CELL_SIZE = 1.0
+enum GameState { MENU, PLAYING, PAUSED, GAME_OVER, TUTORIAL, SETTINGS, SKIN_SELECT }
+enum GameMode { CLASSIC, TIME_ATTACK, SURVIVAL }
+enum Difficulty { EASY, MEDIUM, HARD }
+@onready var grid = $Grid
+@onready var snake = $Snake
+@onready var snake2 = $Snake2
+@onready var food = $Food
+@onready var food_mesh = $Food/FoodMesh
+@onready var food_particles = $Food/FoodParticles
+@onready var power_up = $PowerUp
+@onready var power_up_mesh = $PowerUp/PowerUpMesh
+@onready var camera = $Camera3D
+@onready var directional_light = $DirectionalLight3D
+@onready var world_environment = $WorldEnvironment
+@onready var ui = $UI
+@onready var score_label = $UI/ScoreLabel
+@onready var timer_label = $UI/TimerLabel
+@onready var pause_button = $UI/PauseButton
+@onready var game_over_panel = $UI/GameOverPanel
+@onready var final_score_label = $UI/GameOverPanel/FinalScoreLabel
+@onready var menu_panel = $UI/MenuPanel
+@onready var tutorial_panel = $UI/TutorialPanel
+@onready var settings_panel = $UI/SettingsPanel
+@onready var skin_select_panel = $UI/SkinSelectPanel
+@onready var pause_panel = $UI/PausePanel
+@onready var exit_confirm_panel = $UI/ExitConfirmPanel
+@onready var multiplayer_message = $UI/MultiPlayerMessage
+@onready var highscore_panel = $UI/HighScorePanel
+@onready var music_player = $AudioStreamPlayer
+@onready var eat_sound = $EatSound
+@onready var powerup_sound = $PowerUpSound
+@onready var death_sound = $DeathSound
+@onready var ui_sound = $UISound
+var food_position = Vector3.ZERO
+var special_food_position = Vector3.ZERO
+var special_food_active = false
+var special_food_type = 0
+var power_up_position = Vector3.ZERO
+var power_up_active = false
+var game_state = GameState.MENU
+var game_mode = GameMode.CLASSIC
+var difficulty = Difficulty.EASY
+var score = 0
+var player2_score = 0
+var high_scores = {
+	"classic_easy": 0,
+	"classic_medium": 0,
+	"classic_hard": 0,
+	"time_attack_easy": 0,
+	"time_attack_medium": 0,
+	"time_attack_hard": 0,
+	"survival_easy": 0,
+	"survival_medium": 0,
+	"survival_hard": 0
+}
+var camera_target_offset = Vector3.ZERO
+var camera_shake_amount = 0.0
+var multiplayer_mode = false
+var time_remaining = 60.0
+var obstacles = []
+var current_skin = 0
+var music_volume = 0.5
+var sfx_volume = 0.7
+var light_cycle_time = 0.0
+var light_intensity_base = 1.0
+
+func _ready():
+	create_grid()
+	setup_food()
+	setup_special_food()
+	setup_power_up()
+	setup_ui()
+	load_all_settings()
+	setup_audio()
+	setup_post_processing()
+	hide_all_panels()
+	menu_panel.visible = true
+	connect_menu_buttons()
+	connect_game_buttons()
+	if music_player and not music_player.playing:
+		music_player.play()
+
+func _process(delta):
+	if music_player and not music_player.playing:
+		music_player.play()
+	match game_state:
+		GameState.PLAYING:
+			update_camera(delta)
+			maybe_spawn_power_up()
+			maybe_spawn_special_food()
+			maybe_spawn_obstacles()
+			animate_food(delta)
+			animate_special_food(delta)
+			if power_up_active:
+				animate_power_up(delta)
+			animate_obstacles(delta)
+			update_dynamic_lighting(delta)
+			if game_mode == GameMode.TIME_ATTACK:
+				time_remaining -= delta
+				timer_label.text = "Time: " + str(int(time_remaining))
+				if time_remaining <= 0:
+					end_game()
+		GameState.GAME_OVER:
+			update_camera(delta)
+			update_dynamic_lighting(delta)
+		GameState.MENU, GameState.TUTORIAL, GameState.SETTINGS:
+			update_dynamic_lighting(delta)
+
+func _input(event):
+	if event.is_action_pressed("ui_cancel"):
+		if game_state == GameState.PLAYING:
+			pause_game()
+		elif game_state == GameState.PAUSED:
+			resume_game()
+
+func connect_menu_buttons():
+	if not $UI/MenuPanel/VBoxContainer/StartButton.pressed.is_connected(_on_start_button_pressed):
+		$UI/MenuPanel/VBoxContainer/StartButton.pressed.connect(_on_start_button_pressed)
+	if not $UI/MenuPanel/VBoxContainer/MultiplayerButton.pressed.is_connected(_on_multiplayer_button_pressed):
+		$UI/MenuPanel/VBoxContainer/MultiplayerButton.pressed.connect(_on_multiplayer_button_pressed)
+	if not $UI/MenuPanel/VBoxContainer/TutorialButton.pressed.is_connected(_on_tutorial_button_pressed):
+		$UI/MenuPanel/VBoxContainer/TutorialButton.pressed.connect(_on_tutorial_button_pressed)
+	if not $UI/MenuPanel/VBoxContainer/HighScoreButton.pressed.is_connected(_on_highscore_button_pressed):
+		$UI/MenuPanel/VBoxContainer/HighScoreButton.pressed.connect(_on_highscore_button_pressed)
+	if not $UI/MenuPanel/HBoxContainer/SettingsButton.pressed.is_connected(_on_settings_button_pressed):
+		$UI/MenuPanel/HBoxContainer/SettingsButton.pressed.connect(_on_settings_button_pressed)
+	if not $UI/MenuPanel/HBoxContainer/SkinsButton.pressed.is_connected(_on_skins_button_pressed):
+		$UI/MenuPanel/HBoxContainer/SkinsButton.pressed.connect(_on_skins_button_pressed)
+	if not $UI/MenuPanel/HBoxContainer/ExitButton.pressed.is_connected(_on_exit_button_pressed):
+		$UI/MenuPanel/HBoxContainer/ExitButton.pressed.connect(_on_exit_button_pressed)
+	if not $UI/TutorialPanel/BackButton.pressed.is_connected(_on_tutorial_back_pressed):
+		$UI/TutorialPanel/BackButton.pressed.connect(_on_tutorial_back_pressed)
+	if not $UI/SettingsPanel/BackButton.pressed.is_connected(_on_settings_back_pressed):
+		$UI/SettingsPanel/BackButton.pressed.connect(_on_settings_back_pressed)
+	if not $UI/SettingsPanel/ModeOptionButton.item_selected.is_connected(_on_mode_selected):
+		$UI/SettingsPanel/ModeOptionButton.item_selected.connect(_on_mode_selected)
+	if not $UI/SettingsPanel/DifficultyOptionButton.item_selected.is_connected(_on_difficulty_selected):
+		$UI/SettingsPanel/DifficultyOptionButton.item_selected.connect(_on_difficulty_selected)
+	if not $UI/SkinSelectPanel/BackButton.pressed.is_connected(_on_skin_back_pressed):
+		$UI/SkinSelectPanel/BackButton.pressed.connect(_on_skin_back_pressed)
+	if not $UI/SkinSelectPanel/Skin0Button.pressed.is_connected(Callable(self, "select_skin").bind(0)):
+		$UI/SkinSelectPanel/Skin0Button.pressed.connect(func(): select_skin(0))
+	if not $UI/SkinSelectPanel/Skin1Button.pressed.is_connected(Callable(self, "select_skin").bind(1)):
+		$UI/SkinSelectPanel/Skin1Button.pressed.connect(func(): select_skin(1))
+	if not $UI/SkinSelectPanel/Skin2Button.pressed.is_connected(Callable(self, "select_skin").bind(2)):
+		$UI/SkinSelectPanel/Skin2Button.pressed.connect(func(): select_skin(2))
+	if not $UI/SkinSelectPanel/Skin3Button.pressed.is_connected(Callable(self, "select_skin").bind(3)):
+		$UI/SkinSelectPanel/Skin3Button.pressed.connect(func(): select_skin(3))
+	if not $UI/SkinSelectPanel/Skin4Button.pressed.is_connected(Callable(self, "select_skin").bind(4)):
+		$UI/SkinSelectPanel/Skin4Button.pressed.connect(func(): select_skin(4))
+	if not $UI/SettingsPanel/SFXSlider.value_changed.is_connected(_on_sfx_volume_changed):
+		$UI/SettingsPanel/SFXSlider.value_changed.connect(_on_sfx_volume_changed)
+	if not $UI/ExitConfirmPanel/YesButton.pressed.is_connected(_on_exit_confirm_yes):
+		$UI/ExitConfirmPanel/YesButton.pressed.connect(_on_exit_confirm_yes)
+	if not $UI/ExitConfirmPanel/NoButton.pressed.is_connected(_on_exit_confirm_no):
+		$UI/ExitConfirmPanel/NoButton.pressed.connect(_on_exit_confirm_no)
+
+func _on_mode_selected(index: int):
+	play_ui_sound()
+	game_mode = index as GameMode
+	save_game_settings()
+
+func _on_difficulty_selected(index: int):
+	play_ui_sound()
+	difficulty = index as Difficulty
+	save_game_settings()
+
+func connect_game_buttons():
+	if not $UI/GameOverPanel/RestartButton.pressed.is_connected(_on_restart_button_pressed):
+		$UI/GameOverPanel/RestartButton.pressed.connect(_on_restart_button_pressed)
+	if not $UI/GameOverPanel/MenuButton.pressed.is_connected(_on_menu_button_pressed):
+		$UI/GameOverPanel/MenuButton.pressed.connect(_on_menu_button_pressed)
+	if not $UI/PausePanel/ResumeButton.pressed.is_connected(resume_game):
+		$UI/PausePanel/ResumeButton.pressed.connect(func(): resume_game())
+	if not $UI/PausePanel/RestartButton.pressed.is_connected(_on_restart_button_pressed):
+		$UI/PausePanel/RestartButton.pressed.connect(_on_restart_button_pressed)
+	if not $UI/PausePanel/MenuButton.pressed.is_connected(_on_menu_button_pressed):
+		$UI/PausePanel/MenuButton.pressed.connect(_on_menu_button_pressed)
+	if not $UI/PauseButton.pressed.is_connected(_on_pause_button_pressed):
+		$UI/PauseButton.pressed.connect(_on_pause_button_pressed)
+	if not snake.food_eaten.is_connected(_on_snake_food_eaten):
+		snake.food_eaten.connect(_on_snake_food_eaten)
+	if not snake.special_food_eaten.is_connected(_on_snake_special_food_eaten):
+		snake.special_food_eaten.connect(_on_snake_special_food_eaten)
+	if not snake.power_up_collected.is_connected(_on_snake_power_up_collected):
+		snake.power_up_collected.connect(_on_snake_power_up_collected)
+	if not snake.game_over.is_connected(_on_snake_game_over):
+		snake.game_over.connect(_on_snake_game_over)
+	if multiplayer_mode and is_instance_valid(snake2):
+		if not snake2.food_eaten.is_connected(_on_snake2_food_eaten):
+			snake2.food_eaten.connect(_on_snake2_food_eaten)
+		if not snake2.game_over.is_connected(_on_snake2_game_over):
+			snake2.game_over.connect(_on_snake2_game_over)
+
+func setup_audio():
+	if music_player:
+		music_player.volume_db = linear_to_db(music_volume) if music_volume > 0 else -80
+		music_player.autoplay = false
+		music_player.stream_paused = false
+		if music_player.stream:
+			if music_player.stream is AudioStreamOggVorbis:
+				music_player.stream.loop = true
+			elif music_player.stream is AudioStreamMP3:
+				music_player.stream.loop = true
+			elif music_player.stream is AudioStreamWAV:
+				music_player.stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		if not music_player.finished.is_connected(_on_music_finished):
+			music_player.finished.connect(_on_music_finished)
+	if ui_sound:
+		ui_sound.volume_db = linear_to_db(sfx_volume) if sfx_volume > 0 else -80
+	if eat_sound:
+		eat_sound.volume_db = linear_to_db(sfx_volume) if sfx_volume > 0 else -80
+	if powerup_sound:
+		powerup_sound.volume_db = linear_to_db(sfx_volume) if sfx_volume > 0 else -80
+	if death_sound:
+		death_sound.volume_db = linear_to_db(sfx_volume) if sfx_volume > 0 else -80
+
+func _on_music_finished():
+	if music_player and not music_player.playing:
+		music_player.play()
+
+func setup_post_processing():
+	var env = world_environment.environment
+	env.glow_enabled = true
+	env.glow_intensity = 0.4
+	env.glow_strength = 0.6
+	env.glow_bloom = 0.1
+	env.glow_blend_mode = Environment.GLOW_BLEND_MODE_ADDITIVE
+	env.adjustment_enabled = true
+	env.adjustment_brightness = 1.0
+	env.adjustment_contrast = 1.05
+	env.adjustment_saturation = 1.1
+	env.fog_enabled = true
+	env.fog_light_color = Color(0.4, 0.5, 0.7)
+	env.fog_density = 0.01
+	env.ssao_enabled = true
+	env.ssao_radius = 1.0
+	env.ssao_intensity = 1.5
+
+func update_dynamic_lighting(delta):
+	light_cycle_time += delta * 0.5
+	var intensity = light_intensity_base + sin(light_cycle_time) * 0.1
+	directional_light.light_energy = intensity
+	var color_shift = (sin(light_cycle_time * 0.3) + 1.0) * 0.5
+	directional_light.light_color = Color(1.0, 0.98 + color_shift * 0.02, 0.95 + color_shift * 0.05)
+
+func hide_all_panels():
+	menu_panel.visible = false
+	game_over_panel.visible = false
+	tutorial_panel.visible = false
+	settings_panel.visible = false
+	skin_select_panel.visible = false
+	pause_panel.visible = false
+	exit_confirm_panel.visible = false
+	if has_node("UI/MultiPlayerMessage"):
+		multiplayer_message.visible = false
+	if has_node("UI/HighScorePanel"):
+		highscore_panel.visible = false
+	timer_label.visible = false
+	pause_button.visible = false
+
+func create_grid():
+	for x in range(-GRID_SIZE/2.0, GRID_SIZE/2.0):
+		for z in range(-GRID_SIZE/2.0, GRID_SIZE/2.0):
+			var mesh_instance = MeshInstance3D.new()
+			var box_mesh = BoxMesh.new()
+			var height = 0.1 + randf() * 0.05
+			box_mesh.size = Vector3(CELL_SIZE, height, CELL_SIZE)
+			mesh_instance.mesh = box_mesh
+			var material = StandardMaterial3D.new()
+			if (x + z) % 2 == 0:
+				material.albedo_color = Color(0.15, 0.15, 0.25)
+			else:
+				material.albedo_color = Color(0.12, 0.12, 0.22)
+			material.metallic = 0.3
+			material.roughness = 0.7
+			mesh_instance.material_override = material
+			mesh_instance.position = Vector3(x * CELL_SIZE, -0.5, z * CELL_SIZE)
+			grid.add_child(mesh_instance)
+	create_walls()
+
+func create_walls():
+	var wall_material = StandardMaterial3D.new()
+	wall_material.albedo_color = Color(0.3, 0.1, 0.1)
+	wall_material.emission_enabled = true
+	wall_material.emission = Color(0.5, 0.1, 0.1)
+	wall_material.emission_energy = 0.5
+	var wall_height = 2.0
+	var positions = [
+		Vector3(0, wall_height/2.0, -GRID_SIZE/2.0 * CELL_SIZE),
+		Vector3(0, wall_height/2.0, GRID_SIZE/2.0 * CELL_SIZE),
+		Vector3(-GRID_SIZE/2.0 * CELL_SIZE, wall_height/2, 0),
+		Vector3(GRID_SIZE/2.0 * CELL_SIZE, wall_height/2.0, 0),
+	]
+	var sizes = [
+		Vector3(GRID_SIZE * CELL_SIZE, wall_height, 0.5),
+		Vector3(GRID_SIZE * CELL_SIZE, wall_height, 0.5),
+		Vector3(0.5, wall_height, GRID_SIZE * CELL_SIZE),
+		Vector3(0.5, wall_height, GRID_SIZE * CELL_SIZE),
+	]
+	for i in range(4):
+		var wall = MeshInstance3D.new()
+		var box_mesh = BoxMesh.new()
+		box_mesh.size = sizes[i]
+		wall.mesh = box_mesh
+		wall.material_override = wall_material
+		wall.position = positions[i]
+		grid.add_child(wall)
+
+func setup_food():
+	var sphere_mesh = SphereMesh.new()
+	sphere_mesh.radius = CELL_SIZE * 0.4
+	sphere_mesh.height = CELL_SIZE * 0.8
+	food_mesh.mesh = sphere_mesh
+	var material = StandardMaterial3D.new()
+	material.albedo_color = Color(1.0, 0.3, 0.3)
+	material.emission_enabled = true
+	material.emission = Color(1.0, 0.2, 0.2)
+	material.emission_energy = 2.0
+	material.metallic = 0.8
+	material.roughness = 0.2
+	food_mesh.material_override = material
+	setup_food_particles()
+	spawn_food()
+
+func setup_food_particles():
+	food_particles.emitting = true
+	food_particles.amount = 30
+	food_particles.lifetime = 1.5
+	var particle_material = ParticleProcessMaterial.new()
+	particle_material.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	particle_material.emission_sphere_radius = 0.5
+	particle_material.direction = Vector3(0, 1, 0)
+	particle_material.spread = 45
+	particle_material.initial_velocity_min = 0.5
+	particle_material.initial_velocity_max = 1.5
+	particle_material.gravity = Vector3(0, -2, 0)
+	particle_material.scale_min = 0.05
+	particle_material.scale_max = 0.15
+	particle_material.color = Color(1.0, 0.4, 0.4, 0.8)
+	food_particles.process_material = particle_material
+
+func setup_special_food():
+	var special_food_node = Node3D.new()
+	special_food_node.name = "SpecialFood"
+	add_child(special_food_node)
+	var mesh_instance = MeshInstance3D.new()
+	mesh_instance.name = "SpecialFoodMesh"
+	var star_mesh = BoxMesh.new()
+	star_mesh.size = Vector3(0.6, 0.6, 0.6)
+	mesh_instance.mesh = star_mesh
+	special_food_node.add_child(mesh_instance)
+	var particles = GPUParticles3D.new()
+	particles.name = "SpecialFoodParticles"
+	particles.emitting = true
+	particles.amount = 40
+	particles.lifetime = 2.0
+	special_food_node.add_child(particles)
+	special_food_node.visible = false
+
+func setup_power_up():
+	var torus_mesh = TorusMesh.new()
+	torus_mesh.inner_radius = 0.2
+	torus_mesh.outer_radius = 0.4
+	power_up_mesh.mesh = torus_mesh
+	var material = StandardMaterial3D.new()
+	material.albedo_color = Color(0.3, 0.3, 1.0)
+	material.emission_enabled = true
+	material.emission = Color(0.5, 0.5, 1.0)
+	material.emission_energy = 3.0
+	material.metallic = 1.0
+	material.roughness = 0.1
+	power_up_mesh.material_override = material
+	power_up.visible = false
+
+func setup_ui():
+	score_label.text = "Score: 0"
+	timer_label.text = "Time: 60"
+	timer_label.visible = false
+	pause_button.visible = false
+	ui.process_mode = Node.PROCESS_MODE_ALWAYS
+	var mode_option = $UI/SettingsPanel/ModeOptionButton
+	mode_option.clear()
+	mode_option.add_item("Classic", GameMode.CLASSIC)
+	mode_option.add_item("Time Attack", GameMode.TIME_ATTACK)
+	mode_option.add_item("Survival", GameMode.SURVIVAL)
+	mode_option.select(game_mode)
+	var difficulty_option = $UI/SettingsPanel/DifficultyOptionButton
+	difficulty_option.clear()
+	difficulty_option.add_item("Easy", Difficulty.EASY)
+	difficulty_option.add_item("Medium", Difficulty.MEDIUM)
+	difficulty_option.add_item("Hard", Difficulty.HARD)
+	difficulty_option.select(difficulty)
+	$UI/TutorialPanel/TutorialText.text = """
+	CONTROLS:
+	-Arrow Keys / WASD >> For Keyboard
+	-Touch / Swipe >> For Touch
+	
+	
+	GAME MODES:
+	-Classic >> Traditional Snake Game
+	-Time Attack >> Score as much as possible in 60 seconds
+	-Survival >> Obstacles Spawns Randomly, avoid them!
+	
+	
+	FOOD TYPES:
+	-Red Food >> 10 points
+	-Golden Food >> 30 points
+	-Diamond Food >> 50 points
+	-Power Ring >> 20 Points + Boost's Speed + Invincibility
+	
+	
+	DIFFICULTY:
+	-Easy >> Slow speed, no obstacles
+	-Medium >> Moderate speed, few obstacles
+	-Hard >> Fast speed, many obstacles
+	"""
+
+func setup_obstacles():
+	clear_obstacles()
+	var obstacle_count = 0
+	match difficulty:
+		Difficulty.EASY:
+			obstacle_count = 0
+		Difficulty.MEDIUM:
+			obstacle_count = 3 if game_mode == GameMode.SURVIVAL else 0
+		Difficulty.HARD:
+			obstacle_count = 8 if game_mode == GameMode.SURVIVAL else 5
+	for i in range(obstacle_count):
+		spawn_obstacle()
+
+func spawn_obstacle():
+	var valid_position = false
+	var max_attempts = 50
+	var attempts = 0
+	while not valid_position and attempts < max_attempts:
+		attempts += 1
+		var x = randi() % (GRID_SIZE - 2) - (GRID_SIZE/2.0 - 1)
+		var z = randi() % (GRID_SIZE - 2) - (GRID_SIZE/2.0 - 1)
+		var pos = Vector3(x, 0, z)
+		var snake_clear = true
+		if is_instance_valid(snake) and snake.body.size() > 0:
+			snake_clear = not snake.is_position_occupied(pos)
+		valid_position = snake_clear
+		valid_position = valid_position and pos.distance_to(food_position) > 2
+		valid_position = valid_position and pos.distance_to(Vector3.ZERO) > 3
+		if valid_position:
+			var obstacle = MeshInstance3D.new()
+			var box_mesh = BoxMesh.new()
+			box_mesh.size = Vector3(0.9, 1.5, 0.9)
+			obstacle.mesh = box_mesh
+			var material = StandardMaterial3D.new()
+			material.albedo_color = Color(0.8, 0.2, 0.8)
+			material.emission_enabled = true
+			material.emission = Color(1.0, 0.3, 1.0)
+			material.emission_energy = 2.0
+			material.metallic = 0.9
+			material.roughness = 0.1
+			obstacle.material_override = material
+			obstacle.position = pos
+			grid.add_child(obstacle)
+			obstacles.append({"node": obstacle, "position": pos})
+
+func clear_obstacles():
+	for obs in obstacles:
+		if is_instance_valid(obs.node):
+			obs.node.queue_free()
+	obstacles.clear()
+
+func animate_obstacles(delta):
+	for obs in obstacles:
+		if is_instance_valid(obs.node):
+			obs.node.rotate_y(delta * 2)
+			obs.node.position.y = sin(Time.get_ticks_msec() * 0.002 + obs.position.x) * 0.3
+
+func maybe_spawn_obstacles():
+	if game_mode != GameMode.SURVIVAL or difficulty == Difficulty.EASY:
+		return
+	var spawn_chance = 0.0005 if difficulty == Difficulty.MEDIUM else 0.001
+	if randf() < spawn_chance and obstacles.size() < 15:
+		spawn_obstacle()
+
+func spawn_food():
+	var valid_position = false
+	var max_attempts = 100
+	var attempts = 0
+	while not valid_position and attempts < max_attempts:
+		attempts += 1
+		var x = randi() % (GRID_SIZE - 2) - (GRID_SIZE/2.0 - 1)
+		var z = randi() % (GRID_SIZE - 2) - (GRID_SIZE/2.0 - 1)
+		food_position = Vector3(x, 0, z)
+		var snake_clear = true
+		if is_instance_valid(snake) and snake.body.size() > 0:
+			snake_clear = not snake.is_position_occupied(food_position)
+		valid_position = snake_clear
+		valid_position = valid_position and not is_position_obstacle(food_position)
+	food.position = food_position
+	food_particles.emitting = true
+
+func maybe_spawn_special_food():
+	if special_food_active or randf() > 0.001:
+		return
+	var special_food = get_node_or_null("SpecialFood")
+	if not special_food:
+		return
+	var valid_position = false
+	var max_attempts = 100
+	var attempts = 0
+	while not valid_position and attempts < max_attempts:
+		attempts += 1
+		var x = randi() % (GRID_SIZE - 2) - (GRID_SIZE/2.0 - 1)
+		var z = randi() % (GRID_SIZE - 2) - (GRID_SIZE/2.0 - 1)
+		special_food_position = Vector3(x, 0, z)
+		var snake_clear = true
+		if is_instance_valid(snake) and snake.body.size() > 0:
+			snake_clear = not snake.is_position_occupied(special_food_position)
+		valid_position = snake_clear
+		valid_position = valid_position and special_food_position.distance_to(food_position) > 2
+		valid_position = valid_position and not is_position_obstacle(special_food_position)
+	if valid_position:
+		special_food_type = randi() % 2 + 1
+		special_food.position = special_food_position
+		var mesh = special_food.get_node("SpecialFoodMesh")
+		var material = StandardMaterial3D.new()
+		if special_food_type == 1:
+			material.albedo_color = Color(1.0, 0.8, 0.0)
+			material.emission = Color(1.0, 0.9, 0.2)
+		else:
+			material.albedo_color = Color(0.4, 0.8, 1.0)
+			material.emission = Color(0.6, 1.0, 1.0)
+		material.emission_enabled = true
+		material.emission_energy = 3.0
+		material.metallic = 1.0
+		material.roughness = 0.0
+		mesh.material_override = material
+		special_food.visible = true
+		special_food_active = true
+		get_tree().create_timer(8.0).timeout.connect(func():
+			if is_instance_valid(special_food):
+				special_food.visible = false
+				special_food_active = false
+		)
+
+func is_position_obstacle(pos: Vector3) -> bool:
+	for obs in obstacles:
+		if obs.position.distance_to(pos) < CELL_SIZE:
+			return true
+	return false
+
+func maybe_spawn_power_up():
+	if not power_up_active and randf() < 0.002:
+		var valid_position = false
+		var max_attempts = 100
+		var attempts = 0
+		while not valid_position and attempts < max_attempts:
+			attempts += 1
+			var x = randi() % (GRID_SIZE - 2) - (GRID_SIZE/2.0 - 1)
+			var z = randi() % (GRID_SIZE - 2) - (GRID_SIZE/2. - 1)
+			power_up_position = Vector3(x, 0, z)
+			var snake_clear = true
+			if is_instance_valid(snake) and snake.body.size() > 0:
+				snake_clear = not snake.is_position_occupied(power_up_position)
+			valid_position = snake_clear
+			valid_position = valid_position and power_up_position.distance_to(food_position) > 3
+			valid_position = valid_position and not is_position_obstacle(power_up_position)
+		if valid_position:
+			power_up.position = power_up_position
+			power_up.visible = true
+			power_up_active = true
+			get_tree().create_timer(5.0).timeout.connect(func(): 
+				power_up.visible = false
+				power_up_active = false
+			)
+
+func animate_food(delta):
+	food_mesh.rotate_y(delta * 2)
+	food_mesh.position.y = sin(Time.get_ticks_msec() * 0.003) * 0.2
+
+func animate_special_food(delta):
+	var special_food = get_node_or_null("SpecialFood")
+	if special_food and special_food_active:
+		var mesh = special_food.get_node("SpecialFoodMesh")
+		mesh.rotate_y(delta * 3)
+		mesh.rotate_x(delta * 2)
+		mesh.position.y = sin(Time.get_ticks_msec() * 0.004) * 0.3
+		mesh.scale = Vector3.ONE * (1.0 + sin(Time.get_ticks_msec() * 0.005) * 0.2)
+
+func animate_power_up(delta):
+	power_up_mesh.rotate_y(delta * 3)
+	power_up_mesh.rotate_x(delta * 2)
+	power_up_mesh.position.y = sin(Time.get_ticks_msec() * 0.005) * 0.3
+
+func update_camera(delta):
+	if snake.body.size() > 0 and is_instance_valid(snake.body[0]):
+		var target_pos = snake.body[0].position
+		camera_target_offset = camera_target_offset.lerp(target_pos, delta * 2.0)
+		var shake_offset = Vector3.ZERO
+		if camera_shake_amount > 0:
+			shake_offset = Vector3(
+				randf_range(-camera_shake_amount, camera_shake_amount),
+				randf_range(-camera_shake_amount, camera_shake_amount),
+				0
+			)
+			camera_shake_amount = lerp(camera_shake_amount, 0.0, delta * 5.0)
+		camera.position.x = camera_target_offset.x + shake_offset.x
+		camera.position.y = 18 + shake_offset.y
+		camera.position.z = camera_target_offset.z + 12 + shake_offset.z
+
+func camera_shake(intensity: float):
+	camera_shake_amount = intensity
+
+func _on_snake_food_eaten():
+	score += 10
+	score_label.text = "Score: " + str(score)
+	spawn_food()
+	camera_shake(0.3)
+	if is_instance_valid(eat_sound):
+		eat_sound.play()
+
+func _on_snake_special_food_eaten():
+	var points = 30 if special_food_type == 1 else 50
+	score += points
+	score_label.text = "Score: " + str(score)
+	special_food_active = false
+	camera_shake(0.5)
+	if is_instance_valid(eat_sound):
+		eat_sound.pitch_scale = 1.5
+		eat_sound.play()
+		await get_tree().create_timer(0.1).timeout
+		eat_sound.pitch_scale = 1.0
+
+func _on_snake2_food_eaten():
+	player2_score += 10
+	spawn_food()
+
+func _on_snake_power_up_collected():
+	score += 20
+	score_label.text = "Score: " + str(score)
+	snake.activate_speed_boost()
+	camera_shake(0.5)
+	if is_instance_valid(powerup_sound):
+		powerup_sound.play()
+
+func _on_snake_game_over():
+	end_game()
+
+func _on_snake2_game_over():
+	if multiplayer_mode:
+		game_state = GameState.GAME_OVER
+		game_over_panel.visible = true
+		pause_button.visible = false
+		final_score_label.text = "Player 1: " + str(score) + "\nPlayer 2: " + str(player2_score)
+
+func end_game():
+	game_state = GameState.GAME_OVER
+	game_over_panel.visible = true
+	pause_button.visible = false
+	final_score_label.text = "Final Score: " + str(score)
+	var score_key = get_score_key()
+	var current_high = high_scores[score_key]
+	if score > current_high:
+		high_scores[score_key] = score
+		save_high_scores()
+		final_score_label.text += "\n🏆 NEW HIGH SCORE! 🏆"
+	camera_shake(1.0)
+	if is_instance_valid(death_sound):
+		death_sound.play()
+
+func get_score_key() -> String:
+	var mode_str = ""
+	match game_mode:
+		GameMode.CLASSIC: mode_str = "classic"
+		GameMode.TIME_ATTACK: mode_str = "time_attack"
+		GameMode.SURVIVAL: mode_str = "survival"
+	var diff_str = ""
+	match difficulty:
+		Difficulty.EASY: diff_str = "easy"
+		Difficulty.MEDIUM: diff_str = "medium"
+		Difficulty.HARD: diff_str = "hard"
+	return mode_str + "_" + diff_str
+
+func pause_game():
+	if game_state == GameState.PLAYING:
+		game_state = GameState.PAUSED
+		pause_panel.visible = true
+		pause_button.visible = false
+		get_tree().paused = true
+
+func resume_game():
+	game_state = GameState.PLAYING
+	pause_panel.visible = false
+	pause_button.visible = true
+	get_tree().paused = false
+
+func _on_pause_button_pressed():
+	play_ui_sound()
+	pause_game()
+
+func _on_start_button_pressed():
+	play_ui_sound()
+	start_game(false)
+
+func _on_multiplayer_button_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	multiplayer_message.visible = true
+
+func _on_multiplayer_back_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	menu_panel.visible = true
+
+func _on_highscore_button_pressed():
+	play_ui_sound()
+	if has_node("UI/HighScorePanel"):
+		update_highscore_display()
+		hide_all_panels()
+		highscore_panel.visible = true
+
+func _on_highscore_back_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	menu_panel.visible = true
+
+func _on_exit_button_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	exit_confirm_panel.visible = true
+
+func _on_exit_confirm_yes():
+	play_ui_sound()
+	get_tree().quit()
+
+func _on_exit_confirm_no():
+	play_ui_sound()
+	hide_all_panels()
+	menu_panel.visible = true
+
+func start_game(is_multiplayer: bool):
+	hide_all_panels()
+	multiplayer_mode = is_multiplayer
+	score = 0
+	player2_score = 0
+	score_label.text = "Score: 0"
+	score_label.visible = true
+	pause_button.visible = true
+	game_state = GameState.PLAYING
+	if game_mode == GameMode.TIME_ATTACK:
+		time_remaining = 60.0
+		timer_label.visible = true
+	setup_obstacles()
+	apply_theme_for_skin(current_skin)
+	snake.set_skin(current_skin)
+	snake.set_difficulty(difficulty)
+	snake.start_game()
+	if is_multiplayer and is_instance_valid(snake2):
+		snake2.visible = true
+		snake2.set_skin((current_skin + 2) % 5)
+		snake2.set_difficulty(difficulty)
+		snake2.start_game()
+		snake2.position = Vector3(5, 0, 0)
+
+func select_mode(mode: GameMode):
+	play_ui_sound()
+	game_mode = mode
+	save_game_settings()
+
+func _on_skins_button_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	skin_select_panel.visible = true
+
+func _on_tutorial_button_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	tutorial_panel.visible = true
+
+func _on_settings_button_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	settings_panel.visible = true
+
+func _on_tutorial_back_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	menu_panel.visible = true
+
+func _on_settings_back_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	menu_panel.visible = true
+
+func _on_mode_back_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	menu_panel.visible = true
+
+func _on_skin_back_pressed():
+	play_ui_sound()
+	hide_all_panels()
+	menu_panel.visible = true
+
+func select_skin(skin_index: int):
+	play_ui_sound()
+	current_skin = skin_index
+	update_skin_buttons()
+	save_skin()
+
+func update_skin_buttons():
+	$UI/SkinSelectPanel/Skin0Button.modulate = Color.WHITE if current_skin != 0 else Color(0.2, 0.9, 1.0)
+	$UI/SkinSelectPanel/Skin1Button.modulate = Color.WHITE if current_skin != 1 else Color(1.0, 0.5, 0.0)
+	$UI/SkinSelectPanel/Skin2Button.modulate = Color.WHITE if current_skin != 2 else Color(0.8, 0.1, 0.8)
+	$UI/SkinSelectPanel/Skin3Button.modulate = Color.WHITE if current_skin != 3 else Color(0.0, 1.0, 0.5)
+	$UI/SkinSelectPanel/Skin4Button.modulate = Color.WHITE if current_skin != 4 else Color(1.0, 0.9, 0.0)
+
+func _on_restart_button_pressed():
+	play_ui_sound()
+	get_tree().paused = false
+	clear_obstacles()
+	start_game(multiplayer_mode)
+
+func _on_menu_button_pressed():
+	play_ui_sound()
+	get_tree().paused = false
+	clear_obstacles()
+	hide_all_panels()
+	menu_panel.visible = true
+	game_state = GameState.MENU
+
+func set_difficulty(diff: Difficulty):
+	play_ui_sound()
+	difficulty = diff
+	update_difficulty_buttons()
+	save_game_settings()
+
+func update_difficulty_buttons():
+	$UI/SettingsPanel/EasyButton.modulate = Color.WHITE if difficulty != Difficulty.EASY else Color.GREEN
+	$UI/SettingsPanel/MediumButton.modulate = Color.WHITE if difficulty != Difficulty.MEDIUM else Color.YELLOW
+	$UI/SettingsPanel/HardButton.modulate = Color.WHITE if difficulty != Difficulty.HARD else Color.RED
+
+func _on_sfx_volume_changed(value: float):
+	sfx_volume = value
+	var db_value = linear_to_db(value) if value > 0 else -80
+	if eat_sound:
+		eat_sound.volume_db = db_value
+	if powerup_sound:
+		powerup_sound.volume_db = db_value
+	if death_sound:
+		death_sound.volume_db = db_value
+	if ui_sound:
+		ui_sound.volume_db = db_value
+	save_audio_settings()
+
+func play_ui_sound():
+	if is_instance_valid(ui_sound) and not ui_sound.playing:
+		ui_sound.play()
+
+func check_power_up_collision():
+	if power_up_active and snake.body.size() > 0 and is_instance_valid(snake.body[0]):
+		var head_pos = snake.body[0].position
+		if head_pos.distance_to(power_up_position) < CELL_SIZE * 1.5:
+			power_up.visible = false
+			power_up_active = false
+			_on_snake_power_up_collected()
+
+func check_special_food_collision():
+	if special_food_active and snake.body.size() > 0 and is_instance_valid(snake.body[0]):
+		var head_pos = snake.body[0].position
+		if head_pos.distance_to(special_food_position) < CELL_SIZE * 1.5:
+			var special_food = get_node_or_null("SpecialFood")
+			if special_food:
+				special_food.visible = false
+			_on_snake_special_food_eaten()
+
+func check_obstacle_collision() -> bool:
+	if snake.body.size() == 0 or not is_instance_valid(snake.body[0]):
+		return false
+	var head_pos = snake.body[0].position
+	for obs in obstacles:
+		if head_pos.distance_to(obs.position) < CELL_SIZE * 0.9:
+			return true
+	return false
+
+func get_game_state() -> GameState:
+	return game_state
+
+func save_high_scores():
+	var save_file = FileAccess.open("user://highscores.save", FileAccess.WRITE)
+	if save_file:
+		var keys_order = ["classic_easy", "classic_medium", "classic_hard",
+						  "time_attack_easy", "time_attack_medium", "time_attack_hard",
+						  "survival_easy", "survival_medium", "survival_hard"]
+		for key in keys_order:
+			save_file.store_32(high_scores[key])
+		save_file.close()
+
+func load_high_scores():
+	if FileAccess.file_exists("user://highscores.save"):
+		var save_file = FileAccess.open("user://highscores.save", FileAccess.READ)
+		if save_file:
+			var keys_order = ["classic_easy", "classic_medium", "classic_hard",
+							  "time_attack_easy", "time_attack_medium", "time_attack_hard",
+							  "survival_easy", "survival_medium", "survival_hard"]
+			for key in keys_order:
+				high_scores[key] = save_file.get_32()
+			save_file.close()
+
+func save_skin():
+	var save_file = FileAccess.open("user://skin.save", FileAccess.WRITE)
+	if save_file:
+		save_file.store_32(current_skin)
+		save_file.close()
+
+func load_saved_skin():
+	if FileAccess.file_exists("user://skin.save"):
+		var save_file = FileAccess.open("user://skin.save", FileAccess.READ)
+		if save_file:
+			current_skin = save_file.get_32()
+			save_file.close()
+			update_skin_buttons()
+
+func save_game_settings():
+	var save_file = FileAccess.open("user://settings.save", FileAccess.WRITE)
+	if save_file:
+		save_file.store_32(game_mode)
+		save_file.store_32(difficulty)
+		save_file.close()
+
+func load_game_settings():
+	if FileAccess.file_exists("user://settings.save"):
+		var save_file = FileAccess.open("user://settings.save", FileAccess.READ)
+		if save_file:
+			game_mode = save_file.get_32() as GameMode
+			difficulty = save_file.get_32() as Difficulty
+			save_file.close()
+			$UI/SettingsPanel/ModeOptionButton.select(game_mode)
+			$UI/SettingsPanel/DifficultyOptionButton.select(difficulty)
+
+func save_audio_settings():
+	var save_file = FileAccess.open("user://audio.save", FileAccess.WRITE)
+	if save_file:
+		save_file.store_float(music_volume)
+		save_file.store_float(sfx_volume)
+		save_file.close()
+
+func load_audio_settings():
+	if FileAccess.file_exists("user://audio.save"):
+		var save_file = FileAccess.open("user://audio.save", FileAccess.READ)
+		if save_file:
+			music_volume = save_file.get_float()
+			sfx_volume = save_file.get_float()
+			save_file.close()
+	else:
+		music_volume = 0.5
+		sfx_volume = 0.7
+	if music_player:
+		music_player.volume_db = linear_to_db(music_volume) if music_volume > 0 else -80
+	var db_value = linear_to_db(sfx_volume) if sfx_volume > 0 else -80
+	if eat_sound:
+		eat_sound.volume_db = db_value
+	if powerup_sound:
+		powerup_sound.volume_db = db_value
+	if death_sound:
+		death_sound.volume_db = db_value
+	if ui_sound:
+		ui_sound.volume_db = db_value
+	await get_tree().process_frame
+	if has_node("UI/SettingsPanel/SFXSlider"):
+		$UI/SettingsPanel/SFXSlider.set_value_no_signal(sfx_volume)
+
+func load_all_settings():
+	load_high_scores()
+	load_saved_skin()
+	load_game_settings()
+	load_audio_settings()
+
+func update_highscore_display():
+	$UI/HighScorePanel/VBoxContainer/ClassicEasyLabel.text = "Easy: " + str(high_scores["classic_easy"])
+	$UI/HighScorePanel/VBoxContainer/ClassicMediumLabel.text = "Medium: " + str(high_scores["classic_medium"])
+	$UI/HighScorePanel/VBoxContainer/ClassicHardLabel.text = "Hard: " + str(high_scores["classic_hard"])
+	$UI/HighScorePanel/VBoxContainer/TimeAttackEasyLabel.text = "Easy: " + str(high_scores["time_attack_easy"])
+	$UI/HighScorePanel/VBoxContainer/TimeAttackMediumLabel.text = "Medium: " + str(high_scores["time_attack_medium"])
+	$UI/HighScorePanel/VBoxContainer/TimeAttackHardLabel.text = "Hard: " + str(high_scores["time_attack_hard"])
+	$UI/HighScorePanel/VBoxContainer/SurvivalEasyLabel.text = "Easy: " + str(high_scores["survival_easy"])
+	$UI/HighScorePanel/VBoxContainer/SurvivalMediumLabel.text = "Medium: " + str(high_scores["survival_medium"])
+	$UI/HighScorePanel/VBoxContainer/SurvivalHardLabel.text = "Hard: " + str(high_scores["survival_hard"])
+
+func apply_theme_for_skin(skin_index: int):
+	var themes = [
+		{"grid1": Color(0.15, 0.2, 0.3), "grid2": Color(0.12, 0.17, 0.27), "fog": Color(0.3, 0.5, 0.7), "wall": Color(0.2, 0.3, 0.5)},
+		{"grid1": Color(0.25, 0.12, 0.1), "grid2": Color(0.2, 0.1, 0.08), "fog": Color(0.8, 0.4, 0.2), "wall": Color(0.6, 0.2, 0.1)},
+		{"grid1": Color(0.2, 0.1, 0.25), "grid2": Color(0.17, 0.08, 0.2), "fog": Color(0.6, 0.3, 0.8), "wall": Color(0.5, 0.1, 0.6)},
+		{"grid1": Color(0.1, 0.25, 0.15), "grid2": Color(0.08, 0.2, 0.12), "fog": Color(0.3, 0.8, 0.4), "wall": Color(0.2, 0.6, 0.3)},
+		{"grid1": Color(0.25, 0.22, 0.1), "grid2": Color(0.22, 0.19, 0.08), "fog": Color(0.9, 0.8, 0.3), "wall": Color(0.7, 0.6, 0.2)},
+	]
+	var theme = themes[skin_index]
+	var grid_children = grid.get_children()
+	for child in grid_children:
+		if child is MeshInstance3D:
+			var mat = child.material_override as StandardMaterial3D
+			if mat:
+				if child.position.y > 0:
+					mat.albedo_color = theme.wall
+					mat.emission = theme.wall * 1.5
+					mat.emission_energy = 0.8
+				else:
+					var pos = child.position
+					if (int(pos.x) + int(pos.z)) % 2 == 0:
+						mat.albedo_color = theme.grid1
+					else:
+						mat.albedo_color = theme.grid2
+	var env = world_environment.environment
+	env.fog_light_color = theme.fog
+	directional_light.light_color = Color(1.0, 0.98, 0.95).lerp(theme.fog, 0.3)

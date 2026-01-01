@@ -1,0 +1,530 @@
+extends Node3D
+
+signal food_eaten
+signal special_food_eaten
+signal power_up_collected
+signal game_over
+const CELL_SIZE = 1.0
+const GRID_SIZE = 20
+var speed_settings = {
+	0: {"initial": 0.25, "min": 0.15, "boost": 0.18, "increase": 0.003},  # Easy
+	1: {"initial": 0.20, "min": 0.10, "boost": 0.15, "increase": 0.005},  # Medium
+	2: {"initial": 0.15, "min": 0.08, "boost": 0.12, "increase": 0.007}   # Hard
+}
+var current_difficulty = 1
+var INITIAL_SPEED = 0.20
+var MIN_SPEED = 0.10
+var BOOST_SPEED = 0.15
+var SPEED_INCREASE_PER_FOOD = 0.005
+var direction = Vector3.FORWARD
+var previous_direction = Vector3.FORWARD
+var body = []
+var next_positions = []
+var move_timer = 0.0
+var current_speed = INITIAL_SPEED
+var normal_speed = INITIAL_SPEED
+var touch_start = Vector2.ZERO
+var is_swiping = false
+var is_speed_boosted = false
+var game_started = false
+var is_dead = false
+var current_skin = 0
+var moves_made = 0
+var skin_colors = [
+	# Cyan skin
+	{"head": Color(0.3, 0.7, 1.0), "body": Color(0.5, 0.9, 1.0), "emission": Color(0.4, 0.8, 1.0), "eye": Color(1.0, 1.0, 0.0)},
+	# Fire skin
+	{"head": Color(1.0, 0.6, 0.3), "body": Color(1.0, 0.8, 0.4), "emission": Color(1.0, 0.7, 0.3), "eye": Color(1.0, 0.0, 0.0)},
+	# Purple skin
+	{"head": Color(1.0, 0.3, 0.8), "body": Color(1.0, 0.5, 0.9), "emission": Color(1.0, 0.4, 0.9), "eye": Color(0.5, 1.0, 1.0)},
+	# Toxic skin
+	{"head": Color(0.8, 1.0, 0.3), "body": Color(0.9, 1.0, 0.5), "emission": Color(0.9, 1.0, 0.4), "eye": Color(1.0, 0.0, 1.0)},
+	# Golden skin
+	{"head": Color(0.937, 0.711, 0.121, 1.0), "body": Color(0.994, 0.838, 0.442, 1.0), "emission": Color(0.979, 0.72, 0.0, 1.0), "eye": Color(0.0, 0.0, 0.0)},
+]
+
+@onready var trail_particles = $SnakeTrail
+
+func _ready():
+	setup_trail_particles()
+
+func set_difficulty(difficulty: int):
+	current_difficulty = difficulty
+	var settings = speed_settings[difficulty]
+	INITIAL_SPEED = settings.initial
+	MIN_SPEED = settings.min
+	BOOST_SPEED = settings.boost
+	SPEED_INCREASE_PER_FOOD = settings.increase
+
+func set_skin(skin_index: int):
+	current_skin = clamp(skin_index, 0, skin_colors.size() - 1)
+	apply_skin_to_body()
+	update_trail_color()
+
+func apply_skin_to_body():
+	for i in range(body.size()):
+		if is_instance_valid(body[i]):
+			var segment = body[i]
+			
+			# Update main body material
+			if segment.has_node("Body"):
+				var body_mesh = segment.get_node("Body")
+				var mat = body_mesh.material_override as StandardMaterial3D
+				if mat:
+					var skin = skin_colors[current_skin]
+					if i == 0:
+						mat.albedo_color = skin.head
+						mat.emission_enabled = true
+						mat.emission = skin.emission
+						mat.emission_energy = 1.5
+					else:
+						var intensity = clamp(1.0 - float(i) / 25.0, 0.6, 1.0)
+						mat.albedo_color = skin.body * intensity
+						mat.emission_enabled = true
+						mat.emission = skin.emission * intensity
+						mat.emission_energy = 0.8
+			
+			# Update eyes for head
+			if i == 0 and segment.has_node("LeftEye"):
+				var skin = skin_colors[current_skin]
+				var left_eye = segment.get_node("LeftEye")
+				var right_eye = segment.get_node("RightEye")
+				
+				var eye_mat = left_eye.material_override as StandardMaterial3D
+				if eye_mat:
+					eye_mat.albedo_color = skin.eye
+					eye_mat.emission = skin.eye
+				
+				eye_mat = right_eye.material_override as StandardMaterial3D
+				if eye_mat:
+					eye_mat.albedo_color = skin.eye
+					eye_mat.emission = skin.eye
+
+func start_game():
+	game_started = true
+	is_dead = false
+	direction = Vector3.FORWARD
+	previous_direction = Vector3.FORWARD
+	move_timer = 0.0
+	current_speed = INITIAL_SPEED
+	normal_speed = INITIAL_SPEED
+	is_speed_boosted = false
+	is_swiping = false
+	touch_start = Vector2.ZERO
+	moves_made = 0
+	for segment in body:
+		if is_instance_valid(segment):
+			segment.queue_free()
+	body.clear()
+	next_positions.clear()
+	if is_instance_valid(trail_particles):
+		trail_particles.emitting = true
+		update_trail_color()
+	var start = Vector3(0, 0, 0)
+	add_segment(start, true)  # Head
+	add_segment(start - Vector3.FORWARD * CELL_SIZE, false)
+	add_segment(start - Vector3.FORWARD * CELL_SIZE * 2, false)
+	add_segment(start - Vector3.FORWARD * CELL_SIZE * 3, false)
+	next_positions.clear()
+	for seg in body:
+		next_positions.append(seg.position)
+
+func setup_trail_particles():
+	if not is_instance_valid(trail_particles):
+		return
+	trail_particles.emitting = false
+
+func update_trail_color():
+	if not is_instance_valid(trail_particles):
+		return
+	var skin = skin_colors[current_skin]
+	var particle_material = trail_particles.process_material as ParticleProcessMaterial
+	if particle_material:
+		particle_material.color = Color(skin.emission.r, skin.emission.g, skin.emission.b, 0.9)
+
+func _process(delta):
+	if not game_started or is_dead:
+		return
+	if get_parent().has_method("get_game_state"):
+		var game_state = get_parent().get_game_state()
+		if game_state != 1:
+			return
+	handle_input()
+	handle_touch_input()
+	move_timer += delta
+	if move_timer >= current_speed:
+		move_timer = 0.0
+		move_snake()
+	smooth_move(delta)
+
+func smooth_move(delta):
+	var interp_speed = 12.0
+	for i in range(body.size()):
+		if not is_instance_valid(body[i]):
+			continue
+		if i >= next_positions.size():
+			continue
+		body[i].position = body[i].position.lerp(next_positions[i], interp_speed * delta)
+		if i == 0:
+			var target_yaw = get_direction_yaw(direction)
+			body[i].rotation.y = lerp_angle(
+				body[i].rotation.y,
+				target_yaw,
+				delta * 12.0
+			)
+			continue
+		if i < next_positions.size() - 1:
+			var current_pos = next_positions[i]
+			var next_pos = next_positions[i + 1]
+			var segment_dir = (current_pos - next_pos).normalized()
+			if segment_dir.length() > 0.1:
+				var target_yaw = atan2(segment_dir.x, segment_dir.z)
+				body[i].rotation.y = lerp_angle(
+					body[i].rotation.y,
+					target_yaw,
+					delta * 10.0
+				)
+
+	# Trail follows head
+	if body.size() > 0 and is_instance_valid(trail_particles):
+		trail_particles.global_position = trail_particles.global_position.lerp(
+			body[0].global_position,
+			15.0 * delta
+		)
+
+func handle_input():
+	if is_dead:
+		return
+	var new_direction = direction
+	if Input.is_action_pressed("ui_up") and direction != Vector3.BACK:
+		new_direction = Vector3.FORWARD
+	elif Input.is_action_pressed("ui_down") and direction != Vector3.FORWARD:
+		new_direction = Vector3.BACK
+	elif Input.is_action_pressed("ui_left") and direction != Vector3.RIGHT:
+		new_direction = Vector3.LEFT
+	elif Input.is_action_pressed("ui_right") and direction != Vector3.LEFT:
+		new_direction = Vector3.RIGHT
+	if new_direction != direction:
+		previous_direction = direction
+	direction = new_direction
+
+func handle_touch_input():
+	if is_dead:
+		return
+	if Input.is_action_just_pressed("ui_touch"):
+		touch_start = get_viewport().get_mouse_position()
+		is_swiping = true
+	if Input.is_action_just_released("ui_touch") and is_swiping:
+		var touch_end = get_viewport().get_mouse_position()
+		var swipe = touch_end - touch_start
+		if swipe.length() > 50:
+			var new_direction = direction
+			if abs(swipe.x) > abs(swipe.y):
+				if swipe.x > 0 and direction != Vector3.LEFT:
+					new_direction = Vector3.RIGHT
+				elif swipe.x < 0 and direction != Vector3.RIGHT:
+					new_direction = Vector3.LEFT
+			else:
+				if swipe.y > 0 and direction != Vector3.FORWARD:
+					new_direction = Vector3.BACK
+				elif swipe.y < 0 and direction != Vector3.BACK:
+					new_direction = Vector3.FORWARD
+			if new_direction != direction:
+				previous_direction = direction
+			direction = new_direction
+		is_swiping = false
+
+func move_snake():
+	if body.size() == 0 or is_dead:
+		return
+	if next_positions.size() == 0:
+		return
+	moves_made += 1
+	var head_pos = next_positions[0]
+	var new_head_pos = head_pos + direction * CELL_SIZE
+	if body.size() > 0 and is_instance_valid(body[0]) and is_instance_valid(trail_particles):
+		trail_particles.global_position = body[0].global_position
+	var half = GRID_SIZE * 0.5 - CELL_SIZE
+	if abs(new_head_pos.x) > half or abs(new_head_pos.z) > half:
+		die()
+		return
+	if get_parent().has_method("check_obstacle_collision"):
+		if get_parent().check_obstacle_collision():
+			die()
+			return
+	var ate_food = false
+	if "food_position" in get_parent():
+		ate_food = new_head_pos.distance_to(get_parent().food_position) < CELL_SIZE * 0.6
+	if moves_made > 1 and not is_speed_boosted:
+		var check_until = next_positions.size() - 1 if not ate_food else next_positions.size()
+		for i in range(1, check_until):
+			if next_positions[i].distance_to(new_head_pos) < CELL_SIZE * 0.45:
+				die()
+				return
+	if get_parent().has_method("check_special_food_collision"):
+		if "special_food_active" in get_parent() and get_parent().special_food_active:
+			var special_pos = get_parent().special_food_position
+			if new_head_pos.distance_to(special_pos) < CELL_SIZE * 0.8:
+				get_parent().check_special_food_collision()
+				next_positions.insert(0, new_head_pos)
+				return
+	if get_parent().has_method("check_power_up_collision"):
+		if "power_up_active" in get_parent() and get_parent().power_up_active:
+			get_parent().check_power_up_collision()
+	next_positions[0] = new_head_pos
+	for i in range(body.size() - 1, 0, -1):
+		next_positions[i] = next_positions[i - 1]
+	if ate_food:
+		var tail_pos = next_positions[next_positions.size() - 1]
+		add_segment(tail_pos, false)
+		if normal_speed > MIN_SPEED:
+			normal_speed = max(normal_speed - SPEED_INCREASE_PER_FOOD, MIN_SPEED)
+			if not is_speed_boosted:
+				current_speed = normal_speed
+		food_eaten.emit()
+
+func add_segment(pos: Vector3, is_head: bool):
+	var segment_container = Node3D.new()
+	var segment_index = body.size()
+	if is_head:
+		# Create realistic snake head
+		var head_body = MeshInstance3D.new()
+		head_body.name = "Body"
+		# Main head shape - elongated sphere
+		var head_mesh = SphereMesh.new()
+		head_mesh.radius = CELL_SIZE * 0.5
+		head_mesh.height = CELL_SIZE * 1.2
+		head_mesh.radial_segments = 16
+		head_mesh.rings = 12
+		head_body.mesh = head_mesh
+		# Head material
+		var material = StandardMaterial3D.new()
+		var skin = skin_colors[current_skin]
+		material.albedo_color = skin.head
+		material.emission_enabled = true
+		material.emission = skin.emission
+		material.emission_energy = 1.5
+		material.metallic = 0.7
+		material.roughness = 0.2
+		head_body.material_override = material
+		segment_container.add_child(head_body)
+		# Left eye
+		var left_eye = MeshInstance3D.new()
+		left_eye.name = "LeftEye"
+		var eye_mesh = SphereMesh.new()
+		eye_mesh.radius = 0.12
+		eye_mesh.height = 0.24
+		eye_mesh.radial_segments = 8
+		eye_mesh.rings = 6
+		left_eye.mesh = eye_mesh
+		left_eye.position = Vector3(-0.25, 0.2, 0.4)
+		var eye_mat = StandardMaterial3D.new()
+		eye_mat.albedo_color = skin.eye
+		eye_mat.emission_enabled = true
+		eye_mat.emission = skin.eye
+		eye_mat.emission_energy = 3.0
+		eye_mat.metallic = 1.0
+		eye_mat.roughness = 0.0
+		left_eye.material_override = eye_mat
+		segment_container.add_child(left_eye)
+		# Right eye
+		var right_eye = MeshInstance3D.new()
+		right_eye.name = "RightEye"
+		right_eye.mesh = eye_mesh
+		right_eye.position = Vector3(0.25, 0.2, 0.4)
+		right_eye.material_override = eye_mat.duplicate()
+		segment_container.add_child(right_eye)
+		# nose tip
+		var snout = MeshInstance3D.new()
+		snout.name = "Snout"
+		var snout_mesh = SphereMesh.new()
+		snout_mesh.radius = 0.15
+		snout_mesh.height = 0.3
+		snout_mesh.radial_segments = 8
+		snout_mesh.rings = 6
+		snout.mesh = snout_mesh
+		snout.position = Vector3(0, -0.1, 0.55)
+		var snout_mat = StandardMaterial3D.new()
+		snout_mat.albedo_color = skin.head * 0.8
+		snout_mat.emission_enabled = true
+		snout_mat.emission = skin.emission * 0.5
+		snout_mat.emission_energy = 1.0
+		snout_mat.metallic = 0.6
+		snout_mat.roughness = 0.3
+		snout.material_override = snout_mat
+		segment_container.add_child(snout)
+	else:
+		# Create realistic body segment
+		var body_mesh_instance = MeshInstance3D.new()
+		body_mesh_instance.name = "Body"
+		# Body segment - capsule shape
+		var body_mesh = CapsuleMesh.new()
+		body_mesh.radius = CELL_SIZE * 0.42
+		body_mesh.height = CELL_SIZE * 1.3
+		body_mesh.radial_segments = 12
+		body_mesh.rings = 2
+		body_mesh_instance.mesh = body_mesh
+		# Body material with gradient
+		var material = StandardMaterial3D.new()
+		var skin = skin_colors[current_skin]
+		var intensity = clamp(1.0 - float(segment_index) / 25.0, 0.6, 1.0)
+		material.albedo_color = skin.body * intensity
+		material.emission_enabled = true
+		material.emission = skin.emission * intensity
+		material.emission_energy = 0.8
+		material.metallic = 0.6
+		material.roughness = 0.25
+		body_mesh_instance.material_override = material
+		segment_container.add_child(body_mesh_instance)
+		# Add scale pattern - small decorative spheres
+		if segment_index % 2 == 0:
+			var scale1 = MeshInstance3D.new()
+			scale1.name = "Scale1"
+			var scale_mesh = SphereMesh.new()
+			scale_mesh.radius = 0.08
+			scale_mesh.height = 0.12
+			scale1.mesh = scale_mesh
+			scale1.position = Vector3(0.3, 0, 0)
+			var scale_mat = StandardMaterial3D.new()
+			scale_mat.albedo_color = skin.body * 1.2
+			scale_mat.emission_enabled = true
+			scale_mat.emission = skin.emission * 0.7
+			scale_mat.emission_energy = 1.2
+			scale_mat.metallic = 0.8
+			scale_mat.roughness = 0.1
+			scale1.material_override = scale_mat
+			body_mesh_instance.add_child(scale1)
+			var scale2 = MeshInstance3D.new()
+			scale2.name = "Scale2"
+			scale2.mesh = scale_mesh
+			scale2.position = Vector3(-0.3, 0, 0)
+			scale2.material_override = scale_mat.duplicate()
+			body_mesh_instance.add_child(scale2)
+	segment_container.position = pos
+	add_child(segment_container)
+	if is_head:
+		body.insert(0, segment_container)
+	else:
+		body.append(segment_container)
+	if next_positions.size() == 0:
+		next_positions.append(pos)
+	else:
+		if is_head:
+			next_positions.insert(0, pos)
+		else:
+			next_positions.append(pos)
+
+func activate_speed_boost():
+	if is_dead:
+		return
+	is_speed_boosted = true
+	var boost_multiplier = 0.7
+	current_speed = max(normal_speed * boost_multiplier, MIN_SPEED * 0.8)
+	for segment in body:
+		if not is_instance_valid(segment):
+			continue
+		if segment.has_node("Body"):
+			var body_mesh = segment.get_node("Body")
+			var mat = body_mesh.material_override as StandardMaterial3D
+			if mat:
+				mat.albedo_color = Color(1.0, 1.0, 1.0)
+				mat.emission_enabled = true
+				mat.emission = Color(0.8, 1.0, 1.0)
+				mat.emission_energy = 2.5
+	get_tree().create_timer(3.0).timeout.connect(func():
+		if not is_dead and is_instance_valid(self):
+			is_speed_boosted = false
+			current_speed = normal_speed
+			restore_normal_colors()
+			update_trail_color()
+	)
+
+func restore_normal_colors():
+	if is_dead:
+		return
+	for i in range(body.size()):
+		var segment = body[i]
+		if not is_instance_valid(segment):
+			continue
+		if segment.has_node("Body"):
+			var body_mesh = segment.get_node("Body")
+			var mat = body_mesh.material_override as StandardMaterial3D
+			if not mat:
+				continue
+			var skin = skin_colors[current_skin]
+			if i == 0:
+				mat.albedo_color = skin.head
+				mat.emission_enabled = true
+				mat.emission = skin.emission
+				mat.emission_energy = 1.5
+			else:
+				var intensity = clamp(1.0 - float(i) / 25.0, 0.6, 1.0)
+				mat.albedo_color = skin.body * intensity
+				mat.emission_enabled = true
+				mat.emission = skin.emission * intensity
+				mat.emission_energy = 0.8
+
+func is_position_occupied(pos: Vector3) -> bool:
+	for i in range(next_positions.size()):
+		if i == 0:
+			continue
+		if next_positions[i].distance_to(pos) < CELL_SIZE * 0.45:
+			return true
+	return false
+
+func die():
+	if is_dead:
+		return
+	is_dead = true
+	game_started = false
+	if is_instance_valid(trail_particles):
+		trail_particles.emitting = false
+	trigger_death_effect()
+	game_over.emit()
+
+func trigger_death_effect():
+	var explosion = GPUParticles3D.new()
+	explosion.emitting = true
+	explosion.one_shot = true
+	explosion.amount = 200
+	explosion.lifetime = 2.0
+	explosion.explosiveness = 1.0
+	var particle_material = ParticleProcessMaterial.new()
+	particle_material.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	particle_material.emission_sphere_radius = 0.8
+	particle_material.direction = Vector3(0, 1, 0)
+	particle_material.spread = 180
+	particle_material.initial_velocity_min = 5.0
+	particle_material.initial_velocity_max = 10.0
+	particle_material.gravity = Vector3(0, -9.8, 0)
+	particle_material.scale_min = 0.15
+	particle_material.scale_max = 0.4
+	var skin = skin_colors[current_skin]
+	particle_material.color = skin.emission
+	explosion.process_material = particle_material
+	if body.size() > 0 and is_instance_valid(body[0]):
+		explosion.global_position = body[0].global_position
+	get_parent().add_child(explosion)
+	for segment in body:
+		if is_instance_valid(segment):
+			var tween = create_tween()
+			tween.set_parallel(true)
+			tween.tween_property(segment, "scale", Vector3.ZERO, 0.6)
+			tween.tween_property(segment, "rotation", segment.rotation + Vector3(randf_range(-PI, PI), randf_range(-PI, PI), randf_range(-PI, PI)), 0.6)
+			tween.chain()
+			tween.tween_callback(segment.queue_free)
+	get_tree().create_timer(2.5).timeout.connect(func():
+		if is_instance_valid(explosion):
+			explosion.queue_free()
+	)
+	
+func get_direction_yaw(dir: Vector3) -> float:
+	if dir == Vector3.FORWARD:
+		return PI 
+	elif dir == Vector3.RIGHT:
+		return PI / 2
+	elif dir == Vector3.BACK:
+		return 0.0  
+	elif dir == Vector3.LEFT:
+		return -PI / 2
+	return 0.0
