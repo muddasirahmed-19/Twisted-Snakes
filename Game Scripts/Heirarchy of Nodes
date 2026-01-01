@@ -1,0 +1,87 @@
+Main
+├── WorldEnvironment
+├── Camera3D
+├── DirectionalLight3D
+├── Grid
+├── Snake
+│   └── SnakeTrail
+├── Snake2
+│   └── SnakeTrail
+├── Food
+│   ├── FoodMesh
+│   └── FoodParticles
+├── PowerUp
+│   └── PowerUpMesh
+├── AudioStreamPlayer
+├── EatSound
+├── PowerUpSound
+├── DeathSound
+├── UISound
+├── UI
+│   ├── SkinSelectPanel
+│   │   ├── SkinLabel
+│   │   ├── Skin0Button
+│   │   ├── Skin1Button
+│   │   ├── Skin2Button
+│   │   ├── Skin3Button
+│   │   ├── Skin4Button
+│   │   └── BackButton
+│   ├── PauseButton
+│   ├── TimerLabel
+│   ├── ScoreLabel
+│   ├── MenuPanel
+│   │   ├── TitleLabel
+│   │   ├── SloganText
+│   │   ├── VBoxContainer
+│   │   │   ├── StartButton
+│   │   │   ├── MultiplayerButton
+│   │   │   ├── TutorialButton
+│   │   │   └── HighScoreButton
+│   │   ├── HBoxContainer
+│   │   │   ├── SettingsButton
+│   │   │   ├── SkinsButton
+│   │   │   └── ExitButton
+│   │   └── GameOverPanel
+│   ├── PausePanel
+│   │   ├── PauseLabel
+│   │   ├── ResumeButton
+│   │   ├── RestartButton
+│   │   └── MenuButton
+│   ├── TutorialPanel
+│   │   ├── TutorialPanel
+│   │   ├── TutorialText
+│   │   └── BackButton
+│   ├── SettingsPanel
+│   │   ├── SettingsLabel
+│   │   ├── ModesLabel
+│   │   ├── ModeOptionButton
+│   │   ├── DifficultyLabel
+│   │   ├── DifficultyOptionButton
+│   │   ├── MusicLabel
+│   │   ├── SFXSlider
+│   │   └── BackButton
+│   ├── MultiPlayerMessage
+│   │   ├── MessageLabel
+│   │   ├── Note
+│   │   └── BackButton
+│   ├── HighScorePanel
+│   │   ├── TitleLabel
+│   │   ├── VBoxContainer
+│   │   │   ├── ClassicLabel
+│   │   │   ├── ClassicEasyLabel
+│   │   │   ├── ClassicMediumLabel
+│   │   │   ├── ClassicHardLabel
+│   │   │   ├── TimeAttackLabel
+│   │   │   ├── TimeAttackEasyLabel
+│   │   │   ├── TimeAttackMediumLabel
+│   │   │   ├── TimeAttackHardLabel
+│   │   │   ├── SurvivalLabel
+│   │   │   ├── SurvivalEasyLabel
+│   │   │   ├── SurvivalMediumLabel
+│   │   │   └── SurvivalHardLabel
+│   │   └── BackButton
+│   └── ExitConfirmPanel
+│       ├── Label
+│       ├── RichTextLabel
+│       ├── YesButton
+│       └── NoButton
